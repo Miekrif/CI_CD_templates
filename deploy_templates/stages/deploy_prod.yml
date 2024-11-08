@@ -1,0 +1,33 @@
+Deploy to prod (01):
+  stage: trigger_deploy
+  extends: .prod_variables
+  variables:
+    ENV_CONF: prod
+    TARGET_HOST: ${TES_ALFAAPPS01_IP} #Переехало в переменные группы
+    TARGET_HOSTNAME: ${TES_ALFAAPPS01_HOSTNAME} #Переехало в переменные группы
+  trigger:
+    include:
+      - project: alfa-travel/cicd/ci-templates
+        file: deploy_templates/deploy.gitlab-ci.yml
+        ref: master
+  when: manual
+  only:
+    refs:
+      - tags
+
+Deploy to prod (02):
+  stage: trigger_deploy
+  extends: .prod_variables
+  variables:
+    ENV_CONF: prod
+    TARGET_HOST: ${TES_ALFAAPPS02_IP} #Переехало в переменные группы
+    TARGET_HOSTNAME: ${TES_ALFAAPPS02_HOSTNAME} #Переехало в переменные группы
+  trigger:
+    include:
+      - project: alfa-travel/cicd/ci-templates
+        file: deploy_templates/deploy.gitlab-ci.yml
+        ref: master
+  when: manual
+  only:
+    refs:
+      - tags

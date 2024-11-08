@@ -1,0 +1,10 @@
+pull_image:
+  stage: pull_image
+  script:
+    - export DOCKER_HOST="tcp://$TARGET_HOST:$DOCKER_PORT"
+    - echo "Pull service image $IMAGE_REGISTRY/$IMAGE_NAME:$DEPLOY_VERSION"
+    - docker pull $IMAGE_REGISTRY/$IMAGE_NAME:$DEPLOY_VERSION
+  artifacts:
+    when: on_failure
+    paths:
+      - errors.log

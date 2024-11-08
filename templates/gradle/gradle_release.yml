@@ -1,0 +1,16 @@
+gradle_release:
+  stage: release
+  image: $GRADLE_DOCKER_IMAGE
+  before_script:
+    - git remote set-url origin https://TES-G:${TES_G_API_TOKEN}@${CI_REPOSITORY_URL#*@}
+    - git config --global user.email "TES-G@alfastrah.ru"
+    - git checkout -B "$CI_COMMIT_REF_NAME"
+  script:
+    - gradle release
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - build/libs/*.jar
+  when: manual
+  only:
+    - master

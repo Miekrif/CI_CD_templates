@@ -1,0 +1,236 @@
+include:
+  - local: deploy_templates/get_remote_container_id.gitlab-ci.yml
+  - local: deploy_templates/get_docker_options.gitlab-ci.yml
+
+variables:
+  DEPLOY_VERSION: $CI_COMMIT_TAG
+  DOCKER_CERT_PATH: /certs
+  DOCKER_MOUNT_ROOT: /opt/tes
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_PORT: "2376"
+  DOCKER_NETWORK: "app"
+  DOCKER_NETWORK_ALIAS: ""
+  IMAGE_REGISTRY: nexus.alfastrah.ru:8086
+  CONTAINER_IMAGE: $IMAGE_REGISTRY/$IMAGE_NAME:$DEPLOY_VERSION
+  DOCKER_HOSTS: vault.alfastrah.ru:10.96.4.45
+                keycloak.alfastrah.ru:10.96.3.72
+                z14-2226-elkc2:10.96.3.20
+
+
+get_container_id:
+  stage: get_container_id
+  extends: .get_remote_container_id
+  artifacts:
+    when: always
+    paths:
+      - service_output.json
+      - errors.log
+    expire_in: 1 hour
+  rules:
+    - if: '$USE_BLUE_GREEN_DEPLOY != "true" && $BALANCER_DEPLOY != "true"'
+
+get_container_id_env:
+  stage: get_container_id
+  extends: .get_remote_container_id_env
+  artifacts:
+    when: always
+    paths:
+      - service_output.json
+      - errors.log
+    expire_in: 1 hour
+  rules:
+    - if: '$BALANCER_DEPLOY == "true"'
+
+
+stop_and_remove_container:
+  stage: stop_remove
+  script:
+    - export DOCKER_HOST="tcp://$TARGET_HOST:$DOCKER_PORT"
+    - apk update
+    - apk add jq
+    - cat service_output.json
+    - CONTAINER_ID=$(cat service_output.json | jq -r '.[0].Id')
+    - echo $CONTAINER_ID
+    - |
+      if [ -n "$(docker ps -q -f id=$CONTAINER_ID)" ]; then
+        docker stop $CONTAINER_ID 2> errors.log
+        echo "Container stopped successfully."
+      else
+        echo "Container is not running."
+      fi
+      if [ -n "$(docker ps -a -q -f id=$CONTAINER_ID)" ]; then
+        docker rm $CONTAINER_ID 2> errors.log
+        echo "Container removed successfully."
+      fi
+  dependencies:
+    - get_container_id
+    - get_container_id_env
+  artifacts:
+    when: always
+    paths:
+      - service_output.json
+      - errors.log
+    expire_in: 1 hour
+  rules:
+    - if: $USE_BLUE_GREEN_DEPLOY != "true" || $USE_BLUE_GREEN_DEPLOY == null
+    
+
+
+deploy_service:
+  stage: deploy
+  script: #TODO Перенести определение переменных из джоб деплоя в общую 
+    - export DOCKER_HOST="tcp://$TARGET_HOST:$DOCKER_PORT"
+    - echo "Starting container ${SERVICE_NAME}"
+    - !reference [.get_host_options, script]
+    - !reference [.get_port_options, script]
+    - !reference [.get_label_options, script]
+    - !reference [.get_memory_options, script]
+    - !reference [.get_network_options, script]
+    - !reference [.get_network_alias_options, script]
+    - !reference [.get_mount_options, script]
+    - !reference [.get_env_options, script]
+    - echo "$HOSTS_OPTIONS"
+    - echo "$LABELS_OPTIONS"
+    - echo "$PORTS_OPTIONS"
+    - echo "$MEMORY_OPTION"
+    - echo "$NETWORKS_OPTIONS"
+    - echo "$NETWORKS_ALIAS_OPTIONS"
+    - echo "$MOUNTS_OPTIONS"
+    - echo "$ENVS_OPTIONS"
+    - echo "docker run -d --name $SERVICE_NAME $HOSTS_OPTIONS $LABELS_OPTIONS $MEMORY_OPTION $NETWORKS_OPTIONS $NETWORKS_ALIAS_OPTIONS $PORTS_OPTIONS $MOUNTS_OPTIONS $ENVS_OPTIONS --restart unless-stopped $CONTAINER_IMAGE 2> errors.log"
+    - docker run -d --name $SERVICE_NAME $HOSTS_OPTIONS $LABELS_OPTIONS $MEMORY_OPTION $NETWORKS_OPTIONS $NETWORKS_ALIAS_OPTIONS $PORTS_OPTIONS $MOUNTS_OPTIONS $ENVS_OPTIONS --restart unless-stopped $CONTAINER_IMAGE 2> errors.log
+  artifacts:
+    when: on_failure
+    paths:
+      - errors.log
+  dependencies:
+    - stop_and_remove_container
+  rules:
+    - if: '$USE_BLUE_GREEN_DEPLOY != "true" && $BALANCER_DEPLOY != "true"'
+
+
+blue_green_deploy:
+  stage: deploy
+  before_script:
+    - apk update
+    - apk add --no-cache curl
+  script: #TODO Перенести определение переменных из джоб деплоя в общую 
+    - export DOCKER_HOST="tcp://$TARGET_HOST:$DOCKER_PORT"
+    - !reference [.get_host_options, script]
+    - !reference [.get_port_options, script]
+    - !reference [.get_label_options, script]
+    - !reference [.get_memory_options, script]
+    - !reference [.get_network_options, script]
+    - !reference [.get_network_alias_options, script]
+    - !reference [.get_mount_options, script]
+    - !reference [.get_env_options, script]
+    - echo "$HOSTS_OPTIONS"
+    - echo "$LABELS_OPTIONS"
+    - echo "$PORTS_OPTIONS"
+    - echo "$MEMORY_OPTION"
+    - echo "$NETWORKS_OPTIONS"
+    - echo "$NETWORKS_ALIAS_OPTIONS"
+    - echo "$MOUNTS_OPTIONS"
+    - echo "$ENVS_OPTIONS"
+    - echo "Начинаем Blue-Green Deployment для ${SERVICE_NAME}"
+    - |
+      # Получаем текущий цвет
+      BLUE_CONTAINER=$(docker ps -q -f name=${SERVICE_NAME}-blue)
+      GREEN_CONTAINER=$(docker ps -q -f name=${SERVICE_NAME}-green)
+      
+      if [ -n "$BLUE_CONTAINER" ]; then
+        CURRENT_COLOR="blue"
+        NEXT_COLOR="green"
+      elif [ -n "$GREEN_CONTAINER" ]; then
+        CURRENT_COLOR="green"
+        NEXT_COLOR="blue"
+      else
+        # Если ни один контейнер не запущен, начинаем с blue
+        CURRENT_COLOR="blue"
+        NEXT_COLOR="green"
+      fi
+
+      echo "Текущий цвет: $CURRENT_COLOR, следующий цвет: $NEXT_COLOR"
+      
+      # Запускаем новый контейнер
+      docker run -d \
+        --name ${SERVICE_NAME}-${NEXT_COLOR} ${HOSTS_OPTIONS}\
+        -l blueGreen.serviceName=${SERVICE_NAME} \
+        -l blueGreen.color=${NEXT_COLOR} \
+        ${MEMORY_OPTION} ${NETWORKS_OPTIONS} \
+        ${NETWORKS_ALIAS_OPTIONS} ${PORTS_OPTIONS} \
+        ${MOUNTS_OPTIONS} ${ENVS_OPTIONS} --restart unless-stopped \
+        ${CONTAINER_IMAGE} 2> errors.log
+      
+      echo "docker run -d --name ${SERVICE_NAME}-${NEXT_COLOR} ${HOSTS_OPTIONS} -l blueGreen.serviceName=${SERVICE_NAME} -l blueGreen.color=${NEXT_COLOR} ${MEMORY_OPTION} ${NETWORKS_OPTIONS} ${NETWORKS_ALIAS_OPTIONS} ${PORTS_OPTIONS} ${MOUNTS_OPTIONS} ${ENVS_OPTIONS} --restart unless-stopped ${CONTAINER_IMAGE} 2> errors.log"
+
+      echo "Сервис ${SERVICE_NAME}-${NEXT_COLOR} запущен"
+
+      # Проверяем новый контейнер
+      MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
+      DELAY=${DELAY:-10}
+
+      # Устанавливаем HEALTH_LINK по умолчанию, если не определен
+      HEALTH_ENDPOINT=${HEALTH_ENDPOINT:-/api/manage/health}
+      SERVER_PORT=${SERVER_PORT:-':8080'}
+      HEALTH_LINK="${HEALTH_LINK:-http://${SERVICE_NAME}-${NEXT_COLOR}:${SERVER_PORT}${HEALTH_ENDPOINT}}"
+      echo "Используется HEALTH_LINK: $HEALTH_LINK"
+
+      for ATTEMPT in $(seq 1 $MAX_ATTEMPTS); do
+        echo "Попытка $ATTEMPT: Проверка здоровья контейнера ${SERVICE_NAME}-${NEXT_COLOR}"
+
+        if docker run --rm --network app appropriate/curl -fgLsS $HEALTH_LINK; then
+          echo "Контейнер ${SERVICE_NAME}-${NEXT_COLOR} прошел проверку здоровья"
+          
+          echo "Новый контейнер ${SERVICE_NAME}-${NEXT_COLOR} работает корректно"
+          # Останавливаем и удаляем старый контейнер
+          echo "Текущий цвет удаляю ${CURRENT_COLOR}"
+          if [ "${CURRENT_COLOR}" != "" ]; then
+            if docker ps -q -f name=${SERVICE_NAME}-${CURRENT_COLOR} || false; then
+              echo "Проверка прошла на наличие старого контейнера: docker ps -q -f name=${SERVICE_NAME}-${CURRENT_COLOR}"
+              docker rm -f "${SERVICE_NAME}-${CURRENT_COLOR}"
+              echo "Старый контейнер ${SERVICE_NAME}-${CURRENT_COLOR} остановлен и удален"
+            fi
+            docker exec ${SERVICE_NAME}-balancer /usr/sbin/nginx -s reload
+            echo "Балансировщик обновлен"
+          fi
+          exit 0
+        else
+          echo "Проверка здоровья не пройдена. Ждем $DELAY секунд перед следующей попыткой..."
+          sleep $DELAY
+        fi
+      done
+
+      echo "Контейнер ${SERVICE_NAME}-${NEXT_COLOR} не прошел проверку здоровья после $MAX_ATTEMPTS попыток"
+      docker stop ${SERVICE_NAME}-${NEXT_COLOR}
+      docker rm ${SERVICE_NAME}-${NEXT_COLOR}
+      exit 1
+  allow_failure: true
+  artifacts:
+    when: on_failure
+    paths:
+      - errors.log 
+  rules:
+    - if: $USE_BLUE_GREEN_DEPLOY == "true"
+
+balancers_deploy:
+  environment: ${ENV} 
+  stage: deploy
+  script:
+    - export DOCKER_HOST="tcp://$TARGET_HOST:$DOCKER_PORT"
+    - !reference [.get_port_options, script]
+    - !reference [.get_memory_options, script]
+    - !reference [.get_network_options, script]
+    - !reference [.get_mount_options, script]
+    - !reference [.get_env_options, script]
+    - echo "$ENVS_OPTIONS"
+    - echo "$PORTS_OPTIONS"
+    - echo "$MEMORY_OPTION"
+    - echo "$NETWORKS_OPTIONS"
+    - echo "$MOUNTS_OPTIONS"
+    - cat $DOCKER_ENV_FILE
+    - echo "docker run -d --name ${SERVICE_NAME} ${MEMORY_OPTION} ${MOUNTS_OPTIONS} ${NETWORKS_OPTIONS} ${ENVS_OPTIONS} ${PORTS_OPTIONS} --restart unless-stopped ${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}"
+    - docker run -d --name ${SERVICE_NAME} ${MEMORY_OPTION} ${MOUNTS_OPTIONS} ${NETWORKS_OPTIONS} ${ENVS_OPTIONS} ${PORTS_OPTIONS} --restart unless-stopped ${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}
+  rules:
+    - if: $BALANCER_DEPLOY == "true"
+

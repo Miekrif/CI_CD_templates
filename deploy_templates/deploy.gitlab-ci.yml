@@ -1,0 +1,22 @@
+include:
+  - project: alfa-travel/cicd/ci-templates
+    file: deploy_templates/pull_image.gitlab-ci.yml
+    ref: master
+  - project: alfa-travel/cicd/ci-templates
+    file: deploy_templates/deploy_regular.gitlab-ci.yml
+    ref: master
+  - project: alfa-travel/cicd/ci-templates
+    file: deploy_templates/notify.gitlab-ci.yml
+    ref: master
+
+variables:
+  USE_BLUE_GREEN_DEPLOY: ${USE_BLUE_GREEN_DEPLOY:-false}
+  BALANCER_DEPLOY: ${BALANCER_DEPLOY:-false}
+
+stages:
+  - pull_image
+  - get_container_id
+  - stop_remove
+  - deploy
+  - notify
+  - error_handling

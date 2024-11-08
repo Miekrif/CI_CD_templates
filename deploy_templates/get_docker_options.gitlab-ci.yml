@@ -1,0 +1,80 @@
+# get_docker_options.gitlab-ci.yml
+
+.get_port_options:
+  script:
+    - PORTS_OPTIONS=""
+    - |
+      for PORT in $(echo "$SERVICE_PORTS" | tr -d "'"); do
+        PORTS_OPTIONS="${PORTS_OPTIONS} --publish $PORT"
+      done
+
+.get_host_options:
+  script:
+    - HOSTS_OPTIONS=""
+    - |
+      for HOST in $DOCKER_HOSTS
+      do
+        HOSTS_OPTIONS="${HOSTS_OPTIONS} --add-host $HOST"
+      done
+
+.get_label_options:
+  script:
+    - LABELS_OPTIONS=""
+    - |
+      for LABEL in $(echo "$SERVICE_LABEL" | tr -d "'"); do
+        LABELS_OPTIONS="${LABELS_OPTIONS} -l $LABEL"
+      done
+
+.get_memory_options:
+  script:
+    - MEMORY_OPTION=""
+    - |
+      if [ -n "${DEPLOY_MEMORY}" ]; then
+      MEMORY_OPTION="--memory ${DEPLOY_MEMORY}"
+      fi
+
+.get_network_options:
+  script:
+    - NETWORKS_OPTIONS=""
+    - |
+      for NETWORK in $(echo "$DOCKER_NETWORK" | tr -d "'"); do
+        NETWORKS_OPTIONS="${NETWORKS_OPTIONS} --network $NETWORK"
+      done
+
+.get_network_alias_options:
+  script:
+    - NETWORKS_ALIAS_OPTIONS=""
+    - |
+      for NETWORK_ALIAS in $(echo "$DOCKER_NETWORK_ALIAS" | tr -d "'"); do
+        NETWORKS_ALIAS_OPTIONS="--network-alias ${NETWORK_ALIAS}"
+      done
+
+.get_mount_options:
+  script:
+    - MOUNTS_OPTIONS=""
+    - |
+      if [[ $CI_PROJECT_NAME == "birt-server" ]]; then
+        for MOUNT in $(echo "$SERVICE_DOCKER_MOUNTS" | tr ',' '\n'); do
+          MOUNTS_OPTIONS="${MOUNTS_OPTIONS} --mount type=bind,source=${MOUNT%:*},destination=${MOUNT#*:}"
+        done
+      else
+        for MOUNT in $(echo "$SERVICE_DOCKER_MOUNT" | tr -d "'"); do
+          MOUNTS_OPTIONS="${MOUNTS_OPTIONS} --mount type=bind,source=${MOUNT%:*},destination=${MOUNT#*:}"
+        done
+      fi
+      echo $MOUNTS_OPTIONS
+
+
+.get_env_options:
+  script:
+    - |
+      if [[ $USE_GITLAB_CI_DOCKER_ENV_FILE == "true" ]]; then
+        ENVS_OPTIONS="--env-file $DOCKER_ENV_FILE"
+      else
+        ENVS_OPTIONS=""
+      fi
+
+      for ENV in $DOCKER_ENV
+      do
+        ENVS_OPTIONS="$ENVS_OPTIONS -e $ENV"
+      done

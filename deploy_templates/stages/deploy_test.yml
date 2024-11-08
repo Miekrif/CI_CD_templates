@@ -1,0 +1,16 @@
+Deploy to test:
+  stage: trigger_deploy
+  extends: .test_variables
+  variables:
+    ENV_CONF: test
+    TARGET_HOST: ${TEST_IP} #Переехало в переменные группы
+    TARGET_HOSTNAME: ${TEST_HOSTNAME} #Переехало в переменные группы
+  trigger:
+    include:
+      - project: alfa-travel/cicd/ci-templates
+        file: deploy_templates/deploy.gitlab-ci.yml
+        ref: master
+  when: manual
+  only:
+    refs:
+      - tags

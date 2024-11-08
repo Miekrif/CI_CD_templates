@@ -1,0 +1,130 @@
+image: safe-registry.alfastrah.ru/docker:25.0.5
+
+include:
+  - local: "templates/maven/preparing.yml"
+  - local: "templates/gitlab_release.yml"
+
+services:
+  - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+    alias: docker
+
+variables:
+  WITH_NPM_DEPLOY: "false"
+  MAVEN_CLI_OPTS: "-s .m2/settings.xml --batch-mode -Denvironment.config=$ENV_CONFIG -Dmaven.repo.local=.m2/repository"
+  SONAR_OPTS: "-Dsonar.host.url=$SONAR_SERVER_URL -Dsonar.login=$SONAR_LOGIN_TOKEN -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=600 -Dsonar.coverage.jacoco.xmlReportPath=target/site/jacoco/jacoco.xml"
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+
+stages:
+  - build
+  - release
+  - deploy
+  - security
+
+cache:
+  paths:
+    - .m2/repository/
+
+.scm_connect: &scm_connect
+  - mv $NEW_SETTINGS_XML_FILE .m2/settings.xml
+  - 'command -v ssh-agent > /dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+  - eval $(ssh-agent -s)
+  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 700 ~/.ssh
+  - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+  - ssh-keyscan -H 'gitlab.alfastrah.ru' >> ~/.ssh/known_hosts
+  - chmod 644 ~/.ssh/known_hosts
+  - git config --global user.email "TES-G@alfastrah.ru"
+  - git checkout -B "$CI_COMMIT_REF_NAME"
+
+maven_build:
+  stage: build
+  image: $OPENJDK_MAVEN_IMAGE_SLIM
+  script:
+    - mvn $MAVEN_CLI_OPTS clean package
+  needs: ["maven_prepare"]
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - target/
+  timeout: 30 min
+
+sonar:
+  stage: build
+  image: $OPENJDK_MAVEN_IMAGE_SLIM
+  except:
+    refs:
+      # Не запускаем для сборок тегов
+      - tags
+    variables:
+      # Если коммит был автоматический (с помощью maven-release-plugin) - пропускаем фазу проверки Sonar
+      - $CI_COMMIT_MESSAGE =~ /maven-release-plugin/
+      # Если явно указан флаг пропуска Sonar-фазы - пропускаем это задание
+      - $SKIP_SONAR == "true"
+  needs: ["maven_prepare", "maven_build"]
+  script:
+    - mvn $MAVEN_CLI_OPTS $SONAR_OPTS sonar:sonar
+  timeout: 15 min
+
+maven_release:
+  stage: release
+  image: $OPENJDK_MAVEN_IMAGE_SLIM
+  before_script:
+    - *scm_connect
+  script:
+    - echo "Выполняем Maven релиз (ветка $CI_COMMIT_REF_NAME)"
+    - mvn $MAVEN_CLI_OPTS -Darguments=-DskipTests release:prepare release:perform
+  after_script:
+    - |-
+      if [[ "$CI_JOB_STATUS" == "failed" ]]; then
+          curl -x POST -d "payload={\"text\": \"Упал релиз: [$CI_PIPELINE_ID]$CI_PIPELINE_URL\"}" $MATTERMOST_BOT_WEBHOOK
+      fi
+  needs: ["maven_prepare", "maven_build"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'master'
+      when: manual
+    - if: $CI_COMMIT_BRANCH != 'master'
+      when: never
+
+npm-deploy:
+  stage: deploy
+  image: safe-registry.alfastrah.ru/node:hydrogen-alpine3.20
+  script:
+    - npm i -g typescript
+    - npm i -g npm@10.7.0
+    - |
+      for dirToPublish in $(find $CI_PROJECT_DIR -type d -name ts-openapi); do
+        cd $dirToPublish
+        echo '!dist' >> ./.npmignore
+        npm i
+        echo "always-auth=true" >> .npmrc
+        echo "strict-ssl=false" >> .npmrc
+        echo "registry=http://nexus.alfastrah.ru/repository/tes-npm/" >> .npmrc
+        echo "//nexus.alfastrah.ru/repository/tes-npm/:_auth=${NPM_AUTH_TOKEN}" >> .npmrc
+        npm publish
+      done
+  when: manual
+  only:
+    - tags
+  except:
+    variables:
+      - $WITH_NPM_DEPLOY == "false"
+
+security_java_lib:
+  stage: security
+  needs: ["maven_build"]
+  allow_failure: true
+  variables:
+    SEC_DEPENDENCY_SCAN_ENABLE: "true"
+  trigger:
+    include:
+      - project: oak/security/security-pipeline
+        ref: master
+        file: pipeline.yml
+  except:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /maven-release-plugin/

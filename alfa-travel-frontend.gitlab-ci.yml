@@ -1,0 +1,58 @@
+image: safe-registry.alfastrah.ru/docker:25.0.5
+
+include:
+  - local: "templates/docker/docker_node_build.yml"
+  - local: "templates/docker/docker_deploy.yml"
+  - local: "templates/gitlab_release.yml"
+
+services:
+  - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+    alias: docker
+
+variables:
+  DOCKER_IMAGE: "$NEXUS_REGISTRY_URL/$NEXUS_PATH/$ARTIFACT_NAME"
+  DOCKER_IMAGE_VERSION: "$CI_COMMIT_TAG"
+  SCANNED_IMAGE: "$DOCKER_IMAGE:$CI_COMMIT_TAG"
+  ARTIFACT_NAME: ""
+  NEXUS_PATH: ""
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+
+stages:
+  - build
+  - release
+  - deploy
+  - security
+
+node_build:
+  stage: build
+  image: safe-registry.alfastrah.ru/node:hydrogen-alpine3.20
+  before_script:
+    - npm i -g npm@10.7.0
+    - npm i -g typescript@4.8.4
+    - echo "always-auth=true" >> .npmrc
+    - echo "strict-ssl=false" >> .npmrc
+    - echo "@tes:registry=http://nexus.alfastrah.ru/repository/npm-group/" >> .npmrc
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - dist/*
+      - build/*
+
+security_frontend:
+  stage: security
+  needs: ["node_build"]
+  allow_failure: true
+  variables:
+    SEC_DEPENDENCY_SCAN_ENABLE: "true"
+  trigger:
+    include:
+      - project: oak/security/security-pipeline
+        ref: master
+        file: pipeline.yml
+  except:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /maven-release-plugin/

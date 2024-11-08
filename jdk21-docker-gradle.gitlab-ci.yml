@@ -1,0 +1,63 @@
+image: safe-registry.alfastrah.ru/docker:25.0.5
+
+include:
+  - local: "templates/gitlab_release.yml"
+  - local: "templates/gradle/gradle_release.yml"
+  - local: "templates/docker/docker_gradle_build.yml"
+  - local: "templates/docker/docker_deploy.yml"
+
+services:
+  - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+    alias: docker
+
+variables:
+  GRADLE_DOCKER_IMAGE: safe-registry.alfastrah.ru/gradle:8.5.0-jdk21-alpine
+  DOCKER_IMAGE: "$NEXUS_REGISTRY_URL/$NEXUS_PATH/$ARTIFACT_NAME"
+  DOCKER_IMAGE_VERSION: "$CI_COMMIT_TAG"
+  SCANNED_IMAGE: "$DOCKER_IMAGE:latest"
+  ARTIFACT_NAME: ""
+  JAR_NAME: ""
+  NEXUS_PATH: ""
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+
+stages:
+  - build
+  - release
+  - deploy
+  - security
+
+gradle_build:
+  stage: build
+  image: $GRADLE_DOCKER_IMAGE
+  before_script:
+    - export GRADLE_USER_HOME=`pwd`/.gradle_home
+  script:
+    - gradle clean bootJar check --stacktrace --info --build-cache
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - build/libs/*.jar
+  timeout: 30 min
+  cache:
+    - key: dep-cache
+      paths:
+        - .gradle_home
+
+security_jdk:
+  stage: security
+  needs: ["gradle_build"]
+  allow_failure: true
+  variables:
+    SEC_DEPENDENCY_SCAN_ENABLE: "true"
+  trigger:
+    include:
+      - project: oak/security/security-pipeline
+        ref: master
+        file: pipeline.yml
+  except:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /Gradle Release Plugin/

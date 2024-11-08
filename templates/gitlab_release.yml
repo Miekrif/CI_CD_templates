@@ -1,0 +1,13 @@
+# Это задание для оформления релиза в Gitlab.
+Релиз в Gitlab:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "Выполняем релиз в Gitlab"
+  release:
+    name: Release v$CI_COMMIT_TAG
+    tag_name: $CI_COMMIT_TAG
+    description: $CI_COMMIT_TAG
+  allow_failure: true

@@ -1,0 +1,59 @@
+notify_success:
+  stage: notify
+  image: safe-registry.alfastrah.ru/alpine:3.20
+  before_script:
+    - apk add --update --no-cache curl sed libcurl jq bash
+    - apk update && apk upgrade
+  script:
+    - MESSAGE_MATTERMOST="**${SERVICE_NAME}** обновлен на **${TARGET_HOSTNAME} (${TARGET_HOST})**. Версия **${DEPLOY_VERSION}**"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"GitlaBot", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  rules:
+    - if: '$BALANCER_DEPLOY != "true"'
+
+error_notify:
+  stage: error_handling
+  before_script:
+    - apk add --update --no-cache curl sed libcurl jq bash
+    - apk update && apk upgrade
+  script:
+    - echo "Send notification with error to Mattermost"
+    - ERROR_LOG="$(cat errors.log)"
+    - ERROR_PREPARED_LOG=${ERROR_LOG//\"/\\\"}
+    - MESSAGE_MATTERMOST="Ошибка в pipeline [${CI_PIPELINE_ID}](${CI_PIPELINE_URL}) для [${CI_COMMIT_TITLE}](${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}). \n \`\`\` \n ${ERROR_PREPARED_LOG} \n \`\`\`"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"GitlaBot", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  when: on_failure
+  rules:
+    - if: '$BALANCER_DEPLOY != "true"'
+
+notify_success_envs:
+  environment: ${ENV}
+  stage: notify
+  image: safe-registry.alfastrah.ru/alpine:3.20
+  before_script:
+    - apk add --update --no-cache curl sed libcurl jq bash
+    - apk update && apk upgrade
+  script:
+    - MESSAGE_MATTERMOST="**${SERVICE_NAME}** обновлен на **${TARGET_HOSTNAME} (${TARGET_HOST})**."
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"GitlaBot", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  rules:
+    - if: '$BALANCER_DEPLOY == "true"'
+
+error_notify_envs:
+  environment: ${ENV}
+  stage: error_handling
+  before_script:
+    - apk add --update --no-cache curl sed libcurl jq bash
+    - apk update && apk upgrade
+  script:
+    - echo "Send notification with error to Mattermost"
+    - ERROR_LOG="$(cat errors.log)"
+    - ERROR_PREPARED_LOG=${ERROR_LOG//\"/\\\"}
+    - MESSAGE_MATTERMOST="Ошибка в pipeline [${CI_PIPELINE_ID}](${CI_PIPELINE_URL}) для [${CI_COMMIT_TITLE}](${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}). \n \`\`\` \n ${ERROR_PREPARED_LOG} \n \`\`\`"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"GitlaBot", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  when: on_failure
+  rules:
+    - if: '$BALANCER_DEPLOY == "true"'

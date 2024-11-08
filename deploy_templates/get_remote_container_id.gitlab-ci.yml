@@ -1,0 +1,39 @@
+# get_remote_container_id.gitlab-ci.yml
+
+.get_remote_container_id: &get_remote_container_id
+  stage: get_container_id
+  services:
+    - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_VERIFY: ""
+  script:
+    - echo "$ENV"
+    - export DOCKER_TLS_VERIFY=""
+    - echo "docker run --rm -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH appropriate/curl -fgsS --cert $DOCKER_CERT_PATH/cert.pem --key $DOCKER_CERT_PATH/key.pem --cacert $DOCKER_CERT_PATH/ca.pem "https://${TARGET_HOST}:2376/containers/json?all=true&filters={\"name\":[\"^${SERVICE_NAME}.*\"]}" > service_output.json 2> errors.log"
+    - docker run --rm -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH appropriate/curl -fgsS --cert $DOCKER_CERT_PATH/cert.pem --key $DOCKER_CERT_PATH/key.pem --cacert $DOCKER_CERT_PATH/ca.pem "https://${TARGET_HOST}:2376/containers/json?all=true&filters={\"name\":[\"^${SERVICE_NAME}.*\"]}" > service_output.json 2> errors.log
+  rules:
+    - if: '$BALANCER_DEPLOY != "true"'
+
+
+.get_remote_container_id_env: &get_remote_container_id_env
+  environment: ${ENV}
+  stage: get_container_id
+  services:
+    - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_VERIFY: ""
+  script:
+    - echo "$ENV"
+    - export DOCKER_TLS_VERIFY=""
+    - echo "docker run --rm -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH appropriate/curl -fgsS --cert $DOCKER_CERT_PATH/cert.pem --key $DOCKER_CERT_PATH/key.pem --cacert $DOCKER_CERT_PATH/ca.pem "https://${TARGET_HOST}:2376/containers/json?all=true&filters={\"name\":[\"^${SERVICE_NAME}.*\"]}" > service_output.json 2> errors.log"
+    - docker run --rm -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH appropriate/curl -fgsS --cert $DOCKER_CERT_PATH/cert.pem --key $DOCKER_CERT_PATH/key.pem --cacert $DOCKER_CERT_PATH/ca.pem "https://${TARGET_HOST}:2376/containers/json?all=true&filters={\"name\":[\"^${SERVICE_NAME}.*\"]}" > service_output.json 2> errors.log
+  rules:
+    - if: '$BALANCER_DEPLOY == "true"'

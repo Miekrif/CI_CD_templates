@@ -1,0 +1,247 @@
+image: 
+  name: safe-registry.alfastrah.ru/hashicorp/terraform:1.4.2
+  entrypoint: [""]
+
+default:
+  before_script:
+    - terraform -version
+    - cat .terraformrc > ~/.terraformrc
+    - chmod +x bin/yc
+    - export PATH="$(pwd)/bin:${PATH}"
+    - echo "$YC_SA_KEY" > key.json
+    - yc config set service-account-key key.json
+    - export TF_VAR_yc_token=$(yc iam create-token)
+    - echo "Using $CI_COMMIT_BRANCH environment"
+    - terraform init
+    - apk add --update --no-cache jq
+
+variables:
+  PLAN: plan.cache
+  PLAN_JSON: plan.json
+  NOTES: "True"
+  AUTHOR: "Notes"
+  TF_VAR_appdynamics_controller_host_name: "$APPDYNAMICS_CONTROLLER_HOST_NAME"
+  TF_VAR_appdynamics_controller_port: "$APPDYNAMICS_CONTROLLER_PORT"
+  TF_VAR_appdynamics_agent_account_access_key: "$APPDYNAMICS_AGENT_ACCOUNT_ACCESS_KEY"
+
+stages:
+  - check
+  - plan
+  - comment
+  - notify
+  - apply
+  - error_handling
+
+terraform fmt:
+  stage: check
+  environment:
+    name: $CI_COMMIT_BRANCH
+  before_script:
+    - echo "Check HCL syntax"
+  script:
+    - terraform fmt -recursive -diff -check
+  timeout: 2m
+
+terraform validate:
+  stage: check
+  environment:
+    name: $CI_COMMIT_BRANCH
+  script:
+    - terraform validate
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "demo" || $CI_COMMIT_REF_NAME == "master" || $CI_COMMIT_REF_NAME == "prod_tes"'
+  timeout: 2m
+
+# validate_cloud_init:
+#   image: 
+#     name: safe-registry.alfastrah.ru/ubuntu:24.04
+#     entrypoint: [""]
+#   stage: check
+#   environment:
+#     name: $CI_COMMIT_BRANCH
+#   before_script:
+#     - apt-get update
+#     - apt-get install -y cloud-init
+#   script:
+#     - for file in cloud_configs/*.yaml; do cloud-init schema --config-file $file; done
+#   allow_failure: true
+#   # rules:
+#   #   - if: '$CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "demo" || $CI_COMMIT_REF_NAME == "master" || $CI_COMMIT_REF_NAME == "prod_tes"'
+
+
+#run only at MR, use target branch variables
+terraform build plan MR:
+  stage: plan
+  environment:
+    name: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+  script:
+    # build the plan
+    - terraform plan -lock-timeout=120s -input=false -out=plan.zip
+    # plan's text representation
+    - terraform show -no-color plan.zip > plan.txt
+    # count resources planned to change
+    - terraform show -json plan.zip | jq '[.resource_changes[] | select(.change.actions[0] != "no-op")] | length' > plan.changes
+    # convert plan to json expected in gitlab-ci
+    - terraform show -json plan.zip | jq -r '([.resource_changes[].change.actions?]|flatten)|{"create":(map(select(.=="create"))|length),"update":(map(select(.=="update"))|length),"delete":(map(select(.=="delete"))|length)}' > plan.json
+  artifacts:
+    name: plan
+    expire_in: 1 hour
+    paths:
+      - plan.zip
+      - plan.txt
+      - plan.changes
+    reports:
+      terraform:
+        - plan.json
+  rules:
+    # run on merge_requests
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+  interruptible: false
+  timeout: 2m
+
+terraform build plan:
+  stage: plan
+  environment:
+    name: $CI_COMMIT_BRANCH
+  script:
+    # build the plan
+    - terraform plan -lock-timeout=120s -input=false -out=plan.zip
+    # plan's text representation
+    - terraform show -no-color plan.zip > plan.txt
+    # count resources planned to change
+    - terraform show -json plan.zip | jq '[.resource_changes[] | select(.change.actions[0] != "no-op")] | length' > plan.changes
+    # convert plan to json expected in gitlab-ci
+    - terraform show -json plan.zip | jq -r '([.resource_changes[].change.actions?]|flatten)|{"create":(map(select(.=="create"))|length),"update":(map(select(.=="update"))|length),"delete":(map(select(.=="delete"))|length)}' > plan.json
+  artifacts:
+    name: plan
+    expire_in: 1 hour
+    paths:
+      - plan.zip
+      - plan.txt
+      - plan.changes
+    reports:
+      terraform:
+        - plan.json
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "demo" || $CI_COMMIT_REF_NAME == "master" || $CI_COMMIT_REF_NAME == "prod_tes"'
+  interruptible: false
+  timeout: 2m
+
+post plan to comments:
+  stage: comment
+  variables:
+    GIT_STRATEGY: none
+  image: safe-registry.alfastrah.ru/alpine:3.18
+  cache: {}
+  before_script:
+    - apk add --update --no-cache curl sed jq bash
+  script:
+    # if NOTES is not set to True exit gracefully the job now
+    - >-
+      if [ "$NOTES" != "True" ]; then
+        exit 0
+      fi
+    - echo "# Plan" > header.txt
+    - echo \`\`\`diff >> header.txt
+    - echo \`\`\` > footer.txt
+    - cat header.txt plan.txt footer.txt > temp.txt
+    - mv temp.txt plan.txt
+    - rm header.txt footer.txt
+    # - sed -i -e 's/  \#/\#/g' plan.txt
+    # - sed -i -e 's/  +/+/g' plan.txt
+    # - sed -i -e 's/  ~/~/g' plan.txt
+    # - sed -i -e 's/  -/-/g' plan.txt
+    # - MESSAGE=$(cat plan.txt)
+    - MESSAGE=$(cat plan.txt | sed -e 's/  \#/\#/g' -e 's/  +/+/g' -e 's/  ~/~/g' -e 's/  -/-/g')
+    # try to find if we have created any comment/note in the MR already
+    - >-
+      note_id=$(
+        curl \
+          -X GET \
+          --silent \
+          --globoff \
+          --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/discussions" | jq -r '.[].notes[] | select(.author.name=='\"${AUTHOR}\"') | .id'
+      )
+    - >-
+      note_header=$(
+        curl \
+          -X GET \
+          --silent \
+          --globoff \
+          --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/discussions" | jq -r '.[].notes[] | select(.author.name=='\"${AUTHOR}\"') | .body' | head -n1)
+    - >-
+      if [ -n "$note_id" ] && [ "$note_header" == "# Plan" ]; then
+      # we already have a comment/note, update it
+        echo "Update the existing note [id: ${note_id}]"
+        curl \
+          -X PUT \
+          --silent \
+          --globoff \
+          --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          --data-urlencode "body=${MESSAGE}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes/${note_id}" | jq .
+      else
+        echo "Create a new note"
+        curl \
+          -X POST \
+          --silent \
+          --globoff \
+          --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          --data-urlencode "body=${MESSAGE}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" | jq .
+      fi
+    - MESSAGE_HEAD="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID} на изменение **${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}** инфраструктуры:"
+    - MESSAGE=$(echo "$MESSAGE" | sed '/# Plan/d' | sed 's/"/\\"/g')
+    - MESSAGE_MATTERMOST="${MESSAGE_HEAD}\n${MESSAGE}"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"Gitlab-Infra", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  dependencies:
+    - terraform build plan MR
+  rules:
+    # run on merge_requests
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME'
+  timeout: 3m
+
+terraform apply:
+  stage: apply
+  environment:
+    name: $CI_COMMIT_BRANCH
+  script:
+    - export TF_LOG=ERROR
+    - export TF_LOG_PATH=./terraform.log
+    - terraform apply -lock-timeout=120s -input=false -auto-approve
+    - apk add --update --no-cache libcurl curl sed
+    - apk update && apk upgrade
+    - MESSAGE_MATTERMOST="Пользователь ${GITLAB_USER_LOGIN} успешно применил изменения из [${CI_COMMIT_TITLE}](${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}) к **${CI_COMMIT_BRANCH}** инфраструктуре"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"Gitlab-Infra", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+    #     MESSAGE_MATTERMOST="Ошибка в [${CI_JOB_NAME}](${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}) для [${CI_COMMIT_TITLE}](${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}) в ветке **${CI_COMMIT_BRANCH}**. \n \`\`\`${ERROR_MSG}\`\`\`"
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "demo" || $CI_COMMIT_REF_NAME == "master" || $CI_COMMIT_REF_NAME == "prod_tes"'
+      when: manual
+  interruptible: false
+  timeout: 15m
+  artifacts:
+    when: on_failure
+    paths:
+      - terraform.log
+      - .terraform/terraform.tfstate
+    expire_in: 1 day
+
+error_notify:
+  stage: error_handling
+  before_script:
+    - echo "Send notification with error to Mattermost"
+  script:
+    - apk add --update --no-cache libcurl curl sed
+    - apk update && apk upgrade
+    - TERRAFORM_LOG="$(cat terraform.log)"
+    - ESCAPED_TERRAFORM_LOG=${TERRAFORM_LOG//\"/\\\"}
+    - MESSAGE_MATTERMOST="Ошибка в pipeline [${CI_PIPELINE_ID}](${CI_PIPELINE_URL}) для [${CI_COMMIT_TITLE}](${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}) в ветке **${CI_COMMIT_BRANCH}**. \n \`\`\` \n ${ESCAPED_TERRAFORM_LOG} \n \`\`\`"
+    - |
+      curl -i -X POST -d 'payload={"text": "'"${MESSAGE_MATTERMOST}"'", "username":"Gitlab-Infra", "channel":"tes_releases"}' "${MATTERMOST_BOT_WEBHOOK}"
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "demo" || $CI_COMMIT_REF_NAME == "master" || $CI_COMMIT_REF_NAME == "prod_tes"'
+      when: on_failure

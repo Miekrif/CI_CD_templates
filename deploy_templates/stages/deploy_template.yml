@@ -1,0 +1,25 @@
+# в gitlab CI есть переменная DOCKER_EVN_FILE (в alfa-travel), которая имеет вот такое наполнение:
+#  LOGSTASH_DESTINATION_SERVER=$LOGSTASH_DESTINATION_SERVER
+#  VAULT_APPLICATION_NAME=$VAULT_APP_NAME
+#  VAULT_ROLE_ID=$VAULT_ROLE_ID
+#  VAULT_SECRET_ID=$VAULT_SECRET_ID
+#  SENTRY_DSN=$SENTRY_DSN
+#  SENTRY_ENVIRONMENT=$ENV_CONF
+#  SENTRY_SERVERNAME=$ENV_CONF-$SERVICE_NAME
+#  APP_ENVIRONMENT=$ENV_CONF
+#  _JAVA_OPTIONS= -Xmx$DOCKER_XMX_SIZE -Djava.net.preferIPv4Stack=true -Duser.timezone=Europe/Moscow -Dhostname=${ENV_CONF}-${SERVICE_NAME} -Dnetworkaddress.cache.ttl=30s
+# Это нужно, чтобы задавать сложные переменные, типа _JAVA_OPTIONS
+
+.deploy_template: &deploy_template
+  stage: trigger_deploy
+  trigger:
+    include:
+      - project: alfa-travel/cicd/ci-templates
+        file: deploy_templates/deploy.gitlab-ci.yml
+        ref: master
+  when: manual
+  only:
+    refs:
+      - tags
+  environment:
+    name: $ENV_NAME

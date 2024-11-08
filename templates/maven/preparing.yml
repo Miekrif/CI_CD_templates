@@ -1,0 +1,11 @@
+maven_prepare:
+  stage: build
+  before_script:
+    - mkdir -p .m2
+  script:
+#    - echo $SETTINGS_XML > ".m2/settings.xml"
+  - mv $NEW_SETTINGS_XML_FILE .m2/settings.xml
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - .m2/settings.xml

@@ -1,0 +1,15 @@
+docker_build:
+  stage: build
+  services:
+    - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+      alias: docker
+  script:
+    - docker build -t $DOCKER_IMAGE:$DOCKER_IMAGE_VERSION .
+    - docker save -o $ARTIFACT_NAME.tar $DOCKER_IMAGE:$DOCKER_IMAGE_VERSION
+  needs: ["node_build"]
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - $ARTIFACT_NAME.tar
+  only:
+    - tags

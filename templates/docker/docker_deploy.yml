@@ -1,0 +1,29 @@
+deploy_to_nexus:
+  stage: deploy
+  services:
+    - name: safe-registry.alfastrah.ru/docker:25.0.5-dind
+      alias: docker
+  script:
+    - docker login --username $NEXUS_REGISTRY_LOGIN --password $NEXUS_REGISTRY_PASSWORD $NEXUS_REGISTRY_URL
+    - docker load --input $ARTIFACT_NAME.tar
+    - docker push -a $DOCKER_IMAGE
+  needs: ["docker_build"]
+  only:
+    - tags
+
+security_docker_deploy:
+  stage: security
+  needs: ["deploy_to_nexus"]
+  allow_failure: true
+  variables:
+    SEC_IMAGE_SCAN_ENABLE: "true"
+    SEC_IMAGE_TO_SCAN_NAME: $DOCKER_IMAGE
+    SEC_IMAGE_TO_SCAN_TAG: $DOCKER_IMAGE_VERSION
+    SEC_DEPENDENCY_SCAN_ENABLE: "true"
+  trigger:
+    include:
+    - project: oak/security/security-pipeline
+      ref: master
+      file: pipeline.yml
+  only:
+    - tags
